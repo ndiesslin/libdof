@@ -14,12 +14,13 @@ class PinOneCommunication
 private:
    void* m_pipeClient = nullptr;
    NamedPipeServer* m_server = nullptr;
-   std::string m_pipeName = "ComPortServerPipe";
+   std::string m_pipeName;
    std::string m_comPort;
+   int m_baudRate = 2000000;
 
 
 public:
-   PinOneCommunication(const std::string& comPort);
+   PinOneCommunication(const std::string& comPort, int baudRate = 2000000);
    ~PinOneCommunication();
 
    bool ConnectToServer();

@@ -1,9 +1,11 @@
 #include "NamedPipeServer.h"
+#include "../../../Log.h"
 #include "../../../general/StringExtensions.h"
 #include <thread>
 #include <vector>
 #include <stdexcept>
 #include <chrono>
+#include <algorithm>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -11,34 +13,69 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <termios.h>
+#include <errno.h>
 #include <cstring>
 #endif
 
 namespace DOF
 {
 
-const std::string NamedPipeServer::s_pipeName = "ComPortServerPipe";
+std::atomic<int> NamedPipeServer::s_instanceCount{0};
 
-NamedPipeServer::NamedPipeServer(const std::string& comPort)
+NamedPipeServer::NamedPipeServer(const std::string& pipeName, const std::string& comPort, int baudRate)
    : m_comPort(comPort)
+   , m_pipeName(pipeName)
+   , m_baudRate(baudRate)
 {
+   int count = s_instanceCount.fetch_add(1);
+   if (count > 0) {
+       Log::Error(StringExtensions::Build("NamedPipeServer: Duplicate instance detected (Count: {0})! This instance will be passive.", std::to_string(count)));
+       m_isDuplicate = true;
+       return;
+   }
+
+#ifdef _WIN32
    sp_get_port_by_name(comPort.c_str(), &m_serialPort);
    if (m_serialPort)
    {
-      sp_open(m_serialPort, SP_MODE_READ_WRITE);
-      sp_set_baudrate(m_serialPort, 2000000);
-      sp_set_bits(m_serialPort, 8);
-      sp_set_parity(m_serialPort, SP_PARITY_NONE);
-      sp_set_stopbits(m_serialPort, 1);
-      sp_set_rts(m_serialPort, SP_RTS_ON);
-      sp_set_dtr(m_serialPort, SP_DTR_ON);
+      enum sp_return open_resp = sp_open(m_serialPort, SP_MODE_READ_WRITE);
+      if (open_resp != SP_OK) {
+          Log::Warning(StringExtensions::Build("NamedPipeServer: Failed to open serial port {0} (Error: {1})", comPort, std::to_string((int)open_resp)));
+          sp_free_port(m_serialPort);
+          m_serialPort = nullptr;
+      } else {
+          bool configSuccess = true;
+          if (sp_set_baudrate(m_serialPort, baudRate) != SP_OK) { Log::Error("NamedPipeServer: Failed to set baud rate"); configSuccess = false; }
+          if (sp_set_bits(m_serialPort, 8) != SP_OK) { Log::Error("NamedPipeServer: Failed to set bits"); configSuccess = false; }
+          if (sp_set_parity(m_serialPort, SP_PARITY_NONE) != SP_OK) { Log::Error("NamedPipeServer: Failed to set parity"); configSuccess = false; }
+          if (sp_set_stopbits(m_serialPort, 1) != SP_OK) { Log::Error("NamedPipeServer: Failed to set stop bits"); configSuccess = false; }
+          if (sp_set_rts(m_serialPort, SP_RTS_ON) != SP_OK) { Log::Error("NamedPipeServer: Failed to set RTS"); configSuccess = false; }
+          if (sp_set_dtr(m_serialPort, SP_DTR_ON) != SP_OK) { Log::Error("NamedPipeServer: Failed to set DTR"); configSuccess = false; }
+
+          if (!configSuccess)
+          {
+              Log::Error("NamedPipeServer: Configuration failed. Closing port.");
+              sp_close(m_serialPort);
+              sp_free_port(m_serialPort);
+              m_serialPort = nullptr;
+          }
+      }
    }
+   else {
+       Log::Error(StringExtensions::Build("NamedPipeServer: libserialport could not find port {0}", comPort));
+   }
+#else
+    // On macOS/Linux, defer serial port init to POSIX lazy open
+#endif
 }
 
 NamedPipeServer::~NamedPipeServer()
 {
    StopServer();
-   if (m_serialPort)
+   s_instanceCount.fetch_sub(1);
+   if (!m_isDuplicate && m_serialPort)
    {
       sp_close(m_serialPort);
       sp_free_port(m_serialPort);
@@ -47,13 +84,17 @@ NamedPipeServer::~NamedPipeServer()
 
 void NamedPipeServer::StartServer()
 {
+   if (m_isDuplicate) {
+       return;
+   }
+
    m_serverThread = std::thread(
       [this]()
       {
          while (m_isRunning)
          {
 #ifdef _WIN32
-            std::string pipePath = "\\\\.\\pipe\\" + s_pipeName;
+            std::string pipePath = "\\\\.\\pipe\\" + m_pipeName;
             HANDLE serverPipe = CreateNamedPipeA(pipePath.c_str(), PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES, 1024, 1024, 0, nullptr);
 
             if (serverPipe == INVALID_HANDLE_VALUE)
@@ -68,8 +109,8 @@ void NamedPipeServer::StartServer()
 
             CloseHandle(serverPipe);
 #else
-            int serverSock = socket(AF_UNIX, SOCK_STREAM, 0);
-            if (serverSock < 0)
+            m_serverSocket = socket(AF_UNIX, SOCK_STREAM, 0);
+            if (m_serverSocket < 0)
             {
                continue;
             }
@@ -77,31 +118,36 @@ void NamedPipeServer::StartServer()
             struct sockaddr_un addr;
             memset(&addr, 0, sizeof(addr));
             addr.sun_family = AF_UNIX;
-            std::string sockPath = "/tmp/" + s_pipeName;
+            std::string sockPath = "/tmp/" + m_pipeName;
             strncpy(addr.sun_path, sockPath.c_str(), sizeof(addr.sun_path) - 1);
 
             unlink(sockPath.c_str());
 
-            if (bind(serverSock, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+            if (bind(m_serverSocket, (struct sockaddr*)&addr, sizeof(addr)) < 0)
             {
-               close(serverSock);
+               close(m_serverSocket);
+               m_serverSocket = -1;
+               std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                continue;
             }
 
-            if (listen(serverSock, 1) < 0)
+            if (listen(m_serverSocket, 1) < 0)
             {
-               close(serverSock);
+               close(m_serverSocket);
+               m_serverSocket = -1;
+               std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                continue;
             }
 
-            int clientSock = accept(serverSock, nullptr, nullptr);
+            int clientSock = accept(m_serverSocket, nullptr, nullptr);
             if (clientSock >= 0)
             {
                HandleClientConnection(reinterpret_cast<void*>(static_cast<intptr_t>(clientSock)));
                close(clientSock);
             }
 
-            close(serverSock);
+            close(m_serverSocket);
+            m_serverSocket = -1;
             unlink(sockPath.c_str());
 #endif
          }
@@ -129,6 +175,40 @@ void NamedPipeServer::HandleClientConnection(void* serverStream)
          bytesRead = static_cast<int>(dwBytesRead);
 #else
          int sock = static_cast<int>(reinterpret_cast<intptr_t>(serverStream));
+
+         fd_set readfds;
+         FD_ZERO(&readfds);
+         FD_SET(sock, &readfds);
+         
+         int maxFd = sock;
+         if (m_serverSocket != -1)
+         {
+             FD_SET(m_serverSocket, &readfds);
+             maxFd = std::max(maxFd, m_serverSocket);
+         }
+
+         struct timeval tv;
+         tv.tv_sec = 2;
+         tv.tv_usec = 0;
+
+         int retval = select(maxFd + 1, &readfds, NULL, NULL, &tv);
+         if (retval == -1) {
+             break;
+         } else if (retval == 0) {
+             continue; // Timed out, loop and try reading again
+         }
+
+         // New connection detected - drop current client to accept new one
+         if (m_serverSocket != -1 && FD_ISSET(m_serverSocket, &readfds))
+         {
+             break;
+         }
+
+         if (!FD_ISSET(sock, &readfds))
+         {
+             continue;
+         }
+
          bytesRead = static_cast<int>(read(sock, request.data(), request.size()));
          if (bytesRead <= 0)
          {
@@ -168,10 +248,121 @@ void NamedPipeServer::HandleClientConnection(void* serverStream)
             std::string base64Data = requestStr.substr(6);
             std::vector<uint8_t> bytesToWrite = StringExtensions::FromBase64(base64Data);
 
+            // Lazy recovery: If port is null, try to open it now
+            if (!m_serialPort)
+            {
+#ifdef _WIN32
+               sp_get_port_by_name(m_comPort.c_str(), &m_serialPort);
+               if (m_serialPort)
+               {
+                   enum sp_return open_ret = sp_open(m_serialPort, SP_MODE_READ_WRITE);
+                   if (open_ret == SP_OK)
+                   {
+                       bool configSuccess = true;
+                       if (sp_set_baudrate(m_serialPort, m_baudRate) != SP_OK) configSuccess = false;
+                       if (sp_set_bits(m_serialPort, 8) != SP_OK) configSuccess = false;
+                       if (sp_set_parity(m_serialPort, SP_PARITY_NONE) != SP_OK) configSuccess = false;
+                       if (sp_set_stopbits(m_serialPort, 1) != SP_OK) configSuccess = false;
+                       if (sp_set_rts(m_serialPort, SP_RTS_ON) != SP_OK) configSuccess = false;
+                       if (sp_set_dtr(m_serialPort, SP_DTR_ON) != SP_OK) configSuccess = false;
+                       
+                       if (!configSuccess) {
+                           sp_close(m_serialPort);
+                           sp_free_port(m_serialPort);
+                           m_serialPort = nullptr;
+                       }
+                   }
+                   else {
+                       sp_free_port(m_serialPort);
+                       m_serialPort = nullptr;
+                   }
+               }
+#else
+               if (m_rawFd == -1)
+               {
+                   m_rawFd = open(m_comPort.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+                   if (m_rawFd >= 0) {
+                       struct termios tty;
+                       if (tcgetattr(m_rawFd, &tty) == 0) {
+                           cfsetospeed(&tty, B115200);
+                           cfsetispeed(&tty, B115200);
+                           tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
+                           tty.c_iflag &= ~IGNBRK;
+                           tty.c_lflag = 0;
+                           tty.c_oflag = 0;
+                           tty.c_cc[VMIN]  = 0;
+                           tty.c_cc[VTIME] = 5;
+                           tty.c_iflag &= ~(IXON | IXOFF | IXANY);
+                           tty.c_cflag |= (CLOCAL | CREAD);
+                           tty.c_cflag &= ~(PARENB | PARODD);
+                           tty.c_cflag &= ~CSTOPB;
+                           tty.c_cflag &= ~CRTSCTS;
+
+                           if (tcsetattr(m_rawFd, TCSANOW, &tty) != 0) {
+                               Log::Error("NamedPipeServer: Failed to set raw attributes");
+                           }
+                       } else {
+                           Log::Error("NamedPipeServer: Failed to get raw attributes");
+                       }
+                   } else {
+                       Log::Error(StringExtensions::Build("NamedPipeServer: Raw POSIX open failed (errno: {0})", std::to_string(errno)));
+                   }
+               }
+#endif
+            }
+
             if (m_serialPort)
             {
-               sp_blocking_write(m_serialPort, bytesToWrite.data(), bytesToWrite.size(), 500);
+               int written = sp_blocking_write(m_serialPort, bytesToWrite.data(), bytesToWrite.size(), 500);
+
+               if (written < 0)
+               {
+                   sp_close(m_serialPort);
+                   sp_free_port(m_serialPort);
+                   m_serialPort = nullptr;
+                   
+                   std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                   
+                   sp_get_port_by_name(m_comPort.c_str(), &m_serialPort);
+                   enum sp_return open_resp = SP_ERR_ARG;
+                   if (m_serialPort)
+                   {
+                       open_resp = sp_open(m_serialPort, SP_MODE_READ_WRITE);
+                   }
+                   
+                   if (open_resp == SP_OK)
+                   {
+                       bool configSuccess = true;
+                       if (sp_set_baudrate(m_serialPort, m_baudRate) != SP_OK) configSuccess = false;
+                       if (sp_set_bits(m_serialPort, 8) != SP_OK) configSuccess = false;
+                       if (sp_set_parity(m_serialPort, SP_PARITY_NONE) != SP_OK) configSuccess = false;
+                       if (sp_set_stopbits(m_serialPort, 1) != SP_OK) configSuccess = false;
+                       if (sp_set_rts(m_serialPort, SP_RTS_ON) != SP_OK) configSuccess = false;
+                       if (sp_set_dtr(m_serialPort, SP_DTR_ON) != SP_OK) configSuccess = false;
+                       
+                       if (!configSuccess) {
+                           sp_close(m_serialPort);
+                           sp_free_port(m_serialPort);
+                           m_serialPort = nullptr;
+                       }
+                   }
+                   else
+                   {
+                       Log::Error(StringExtensions::Build("NamedPipeServer: Failed to reopen port for retry (Error: {0})", std::to_string((int)open_resp)));
+                   }
+               }
             }
+#ifndef _WIN32
+            else if (m_rawFd >= 0)
+            {
+               ssize_t written = write(m_rawFd, bytesToWrite.data(), bytesToWrite.size());
+               if (written < 0) {
+                   Log::Error(StringExtensions::Build("NamedPipeServer: Raw POSIX WRITE failed (errno: {0})", std::to_string(errno)));
+                   close(m_rawFd);
+                   m_rawFd = -1;
+               }
+            }
+#endif
 
             std::string response = "OK";
 #ifdef _WIN32
@@ -219,6 +410,12 @@ void NamedPipeServer::HandleClientConnection(void* serverStream)
                   response = "TRUE";
                }
             }
+#ifndef _WIN32
+            else if (m_rawFd != -1)
+            {
+                response = "TRUE";
+            }
+#endif
 
 #ifdef _WIN32
             HANDLE pipe = static_cast<HANDLE>(serverStream);

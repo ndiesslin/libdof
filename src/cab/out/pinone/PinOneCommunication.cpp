@@ -20,21 +20,26 @@
 namespace DOF
 {
 
-PinOneCommunication::PinOneCommunication(const std::string& comPort)
+PinOneCommunication::PinOneCommunication(const std::string& comPort, int baudRate)
    : m_comPort(comPort)
+   , m_baudRate(baudRate)
 {
+#ifdef _WIN32
+   m_pipeName = "ComPortServerPipe_" + std::to_string(GetCurrentProcessId());
+#else
+   m_pipeName = "ComPortServerPipe_" + std::to_string(getpid());
+#endif
+
+#ifndef _WIN32
+   m_pipeClient = reinterpret_cast<void*>(static_cast<intptr_t>(-1));
+#endif
 }
 
 PinOneCommunication::~PinOneCommunication()
 {
    try
    {
-      if (m_server)
-      {
-         m_server->StopServer();
-         delete m_server;
-         m_server = nullptr;
-      }
+      DisconnectFromServer();
    }
    catch (...)
    {
@@ -68,6 +73,11 @@ bool PinOneCommunication::ConnectToServer()
       // Set socket to non-blocking for timeout
       int flags = fcntl(sockfd, F_GETFL, 0);
       fcntl(sockfd, F_SETFL, flags | O_NONBLOCK);
+
+#ifdef __APPLE__
+      int set = 1;
+      setsockopt(sockfd, SOL_SOCKET, SO_NOSIGPIPE, (void *)&set, sizeof(int));
+#endif
 
       struct sockaddr_un addr;
       memset(&addr, 0, sizeof(addr));
@@ -123,9 +133,23 @@ bool PinOneCommunication::DisconnectFromServer()
       m_server->StopServer();
       delete m_server;
       m_server = nullptr;
-      return true;
    }
-   return false;
+
+#ifdef _WIN32
+   if (m_pipeClient)
+   {
+      CloseHandle(static_cast<HANDLE>(m_pipeClient));
+      m_pipeClient = nullptr;
+   }
+#else
+   int sockfd = static_cast<int>(reinterpret_cast<intptr_t>(m_pipeClient));
+   if (sockfd >= 0)
+   {
+      close(sockfd);
+      m_pipeClient = reinterpret_cast<void*>(static_cast<intptr_t>(-1));
+   }
+#endif
+   return true;
 }
 
 bool PinOneCommunication::CreateServer()
@@ -134,7 +158,7 @@ bool PinOneCommunication::CreateServer()
    {
       if (!StringExtensions::IsNullOrEmpty(m_comPort))
       {
-         m_server = new NamedPipeServer(m_comPort);
+         m_server = new NamedPipeServer(m_pipeName, m_comPort, m_baudRate);
          m_server->StartServer();
          std::this_thread::sleep_for(std::chrono::milliseconds(300));
          return true;
@@ -188,6 +212,9 @@ void PinOneCommunication::SendPipeMessage(const std::string& message)
       }
 #else
       int sockfd = static_cast<int>(reinterpret_cast<intptr_t>(m_pipeClient));
+      if (sockfd < 0) {
+          throw std::runtime_error("Socket not connected");
+      }
       ssize_t result = write(sockfd, message.c_str(), message.length());
       if (result < 0)
          throw std::runtime_error("Failed to write to socket");
@@ -203,6 +230,9 @@ void PinOneCommunication::SendPipeMessage(const std::string& message)
          WriteFile(pipe, message.c_str(), static_cast<DWORD>(message.length()), &bytesWritten, nullptr);
 #else
          int sockfd = static_cast<int>(reinterpret_cast<intptr_t>(m_pipeClient));
+         if (sockfd < 0) {
+             throw std::runtime_error("Socket not connected after retry");
+         }
          ssize_t bytesWritten = write(sockfd, message.c_str(), message.length());
          (void)bytesWritten;
 #endif
@@ -228,6 +258,9 @@ std::string PinOneCommunication::ReadMessage()
       return std::string(response.data(), bytesRead);
 #else
       int sockfd = static_cast<int>(reinterpret_cast<intptr_t>(m_pipeClient));
+      if (sockfd < 0) {
+          throw std::runtime_error("Socket not connected");
+      }
       ssize_t bytesRead = read(sockfd, response.data(), response.size());
       if (bytesRead < 0)
          throw std::runtime_error("Failed to read from socket");

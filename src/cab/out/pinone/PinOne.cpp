@@ -49,7 +49,7 @@ void PinOne::SetNumber(int value)
       m_number = value;
 
       SetNumberOfOutputs(63);
-      m_oldOutputValues.assign(GetNumberOfOutputs(), 255);
+      m_oldOutputValues.assign(GetNumberOfOutputs(), 0);  // Initialize to 0 so first output changes are detected
    }
 }
 
@@ -87,6 +87,13 @@ void PinOne::Init(Cabinet* cabinet)
       auto it = cabinet->GetOwner()->GetConfigurationSettings().find("PinOneComPort");
       if (it != cabinet->GetOwner()->GetConfigurationSettings().end())
          SetComPort(it->second);
+   }
+
+   if (!m_baudRateSet)
+   {
+       auto it = cabinet->GetOwner()->GetConfigurationSettings().find("PinOneBaudRate");
+       if (it != cabinet->GetOwner()->GetConfigurationSettings().end())
+           SetBaudRate(std::stoi(it->second));
    }
 
    OutputControllerFlexCompleteBase::Init(cabinet);
@@ -153,7 +160,7 @@ void PinOne::ConnectToController()
       if (m_pinOneCommunication)
          DisconnectFromController();
 
-      m_pinOneCommunication = new PinOneCommunication(m_comPort);
+      m_pinOneCommunication = new PinOneCommunication(m_comPort, m_baudRate);
       if (!m_pinOneCommunication->ConnectToServer())
       {
          if (m_pinOneCommunication->CreateServer())
@@ -228,6 +235,12 @@ bool PinOne::FromXml(const tinyxml2::XMLElement* element)
       SetComPort(comPortElement->GetText());
    }
 
+   const tinyxml2::XMLElement* baudRateElement = element->FirstChildElement("BaudRate");
+   if (baudRateElement && baudRateElement->GetText())
+   {
+      SetBaudRate(std::stoi(baudRateElement->GetText()));
+   }
+
    return true;
 }
 
@@ -249,6 +262,10 @@ tinyxml2::XMLElement* PinOne::ToXml(tinyxml2::XMLDocument& doc) const
       comPortElement->SetText(m_comPort.c_str());
       element->InsertEndChild(comPortElement);
    }
+
+   tinyxml2::XMLElement* baudRateElement = doc.NewElement("BaudRate");
+   baudRateElement->SetText(m_baudRate);
+   element->InsertEndChild(baudRateElement);
 
    return element;
 }

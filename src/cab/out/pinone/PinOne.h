@@ -24,6 +24,8 @@ private:
 
    std::string m_comPort = "comm1";
    bool m_comPortSet = false;
+   int m_baudRate = 2000000;
+   bool m_baudRateSet = false;
    std::recursive_mutex m_portLocker;
    PinOneCommunication* m_pinOneCommunication = nullptr;
 
@@ -45,6 +47,9 @@ public:
 
    const std::string& GetComPort() const { return m_comPort; }
    void SetComPort(const std::string& value);
+
+   int GetBaudRate() const { return m_baudRate; }
+   void SetBaudRate(int value) { m_baudRate = value; m_baudRateSet = true; }
 
    virtual void Init(Cabinet* cabinet) override;
    virtual void Finish() override;
