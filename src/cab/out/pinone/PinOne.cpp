@@ -49,7 +49,7 @@ void PinOne::SetNumber(int value)
       m_number = value;
 
       SetNumberOfOutputs(63);
-      m_oldOutputValues.assign(GetNumberOfOutputs(), 0);  // Initialize to 0 so first output changes are detected
+      m_oldOutputValues.assign(GetNumberOfOutputs(), 255);
    }
 }
 

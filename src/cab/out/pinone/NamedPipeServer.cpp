@@ -17,25 +17,20 @@
 #include <termios.h>
 #include <errno.h>
 #include <cstring>
+#ifdef __APPLE__
+#include <IOKit/serial/ioss.h>
+#include <sys/ioctl.h>
+#endif
 #endif
 
 namespace DOF
 {
-
-std::atomic<int> NamedPipeServer::s_instanceCount{0};
 
 NamedPipeServer::NamedPipeServer(const std::string& pipeName, const std::string& comPort, int baudRate)
    : m_comPort(comPort)
    , m_pipeName(pipeName)
    , m_baudRate(baudRate)
 {
-   int count = s_instanceCount.fetch_add(1);
-   if (count > 0) {
-       Log::Error(StringExtensions::Build("NamedPipeServer: Duplicate instance detected (Count: {0})! This instance will be passive.", std::to_string(count)));
-       m_isDuplicate = true;
-       return;
-   }
-
 #ifdef _WIN32
    sp_get_port_by_name(comPort.c_str(), &m_serialPort);
    if (m_serialPort)
@@ -74,20 +69,17 @@ NamedPipeServer::NamedPipeServer(const std::string& pipeName, const std::string&
 NamedPipeServer::~NamedPipeServer()
 {
    StopServer();
-   s_instanceCount.fetch_sub(1);
-   if (!m_isDuplicate && m_serialPort)
+   if (m_serialPort)
    {
       sp_close(m_serialPort);
       sp_free_port(m_serialPort);
+      m_serialPort = nullptr;
    }
+   CloseRawSerialPort();
 }
 
 void NamedPipeServer::StartServer()
 {
-   if (m_isDuplicate) {
-       return;
-   }
-
    m_serverThread = std::thread(
       [this]()
       {
@@ -278,36 +270,7 @@ void NamedPipeServer::HandleClientConnection(void* serverStream)
                    }
                }
 #else
-               if (m_rawFd == -1)
-               {
-                   m_rawFd = open(m_comPort.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
-                   if (m_rawFd >= 0) {
-                       struct termios tty;
-                       if (tcgetattr(m_rawFd, &tty) == 0) {
-                           cfsetospeed(&tty, B115200);
-                           cfsetispeed(&tty, B115200);
-                           tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
-                           tty.c_iflag &= ~IGNBRK;
-                           tty.c_lflag = 0;
-                           tty.c_oflag = 0;
-                           tty.c_cc[VMIN]  = 0;
-                           tty.c_cc[VTIME] = 5;
-                           tty.c_iflag &= ~(IXON | IXOFF | IXANY);
-                           tty.c_cflag |= (CLOCAL | CREAD);
-                           tty.c_cflag &= ~(PARENB | PARODD);
-                           tty.c_cflag &= ~CSTOPB;
-                           tty.c_cflag &= ~CRTSCTS;
-
-                           if (tcsetattr(m_rawFd, TCSANOW, &tty) != 0) {
-                               Log::Error("NamedPipeServer: Failed to set raw attributes");
-                           }
-                       } else {
-                           Log::Error("NamedPipeServer: Failed to get raw attributes");
-                       }
-                   } else {
-                       Log::Error(StringExtensions::Build("NamedPipeServer: Raw POSIX open failed (errno: {0})", std::to_string(errno)));
-                   }
-               }
+               OpenRawSerialPort();
 #endif
             }
 
@@ -450,6 +413,14 @@ void NamedPipeServer::HandleClientConnection(void* serverStream)
 void NamedPipeServer::StopServer()
 {
    m_isRunning = false;
+#ifndef _WIN32
+   if (m_serverSocket != -1)
+   {
+      shutdown(m_serverSocket, SHUT_RDWR);
+      close(m_serverSocket);
+      m_serverSocket = -1;
+   }
+#endif
    if (m_serverThread.joinable())
    {
       m_serverThread.join();
@@ -459,8 +430,88 @@ void NamedPipeServer::StopServer()
    {
       sp_close(m_serialPort);
    }
+   CloseRawSerialPort();
 
    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+}
+
+bool NamedPipeServer::OpenRawSerialPort()
+{
+#ifdef _WIN32
+   return false;
+#else
+   if (m_rawFd >= 0)
+      return true;
+
+   m_rawFd = open(m_comPort.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+   if (m_rawFd < 0)
+   {
+      Log::Error(StringExtensions::Build("NamedPipeServer: Raw POSIX open failed (errno: {0})", std::to_string(errno)));
+      return false;
+   }
+
+   struct termios tty;
+   if (tcgetattr(m_rawFd, &tty) != 0)
+   {
+      Log::Error("NamedPipeServer: Failed to get raw attributes");
+      CloseRawSerialPort();
+      return false;
+   }
+
+   cfmakeraw(&tty);
+   tty.c_cflag |= (CLOCAL | CREAD);
+   tty.c_cflag &= ~CRTSCTS;
+   tty.c_cc[VMIN] = 0;
+   tty.c_cc[VTIME] = 5;
+
+   if (tcsetattr(m_rawFd, TCSANOW, &tty) != 0)
+   {
+      Log::Error("NamedPipeServer: Failed to set raw attributes");
+      CloseRawSerialPort();
+      return false;
+   }
+
+#ifdef __APPLE__
+   // PinOne Mini macOS controller mode accepts output reports over this raw
+   // serial path at 115200.
+   speed_t speed = 115200;
+   if (ioctl(m_rawFd, IOSSIOSPEED, &speed) == -1)
+   {
+      Log::Error("NamedPipeServer: Failed to set raw baud rate 115200");
+      CloseRawSerialPort();
+      return false;
+   }
+#else
+   speed_t speed = B115200;
+   switch (m_baudRate)
+   {
+   case 9600: speed = B9600; break;
+   case 19200: speed = B19200; break;
+   case 38400: speed = B38400; break;
+   case 57600: speed = B57600; break;
+   case 115200: speed = B115200; break;
+   default:
+      Log::Warning(StringExtensions::Build("NamedPipeServer: Unsupported POSIX baud rate {0}, using 115200", std::to_string(m_baudRate)));
+      break;
+   }
+   cfsetospeed(&tty, speed);
+   cfsetispeed(&tty, speed);
+   tcsetattr(m_rawFd, TCSANOW, &tty);
+#endif
+
+   return true;
+#endif
+}
+
+void NamedPipeServer::CloseRawSerialPort()
+{
+#ifndef _WIN32
+   if (m_rawFd >= 0)
+   {
+      close(m_rawFd);
+      m_rawFd = -1;
+   }
+#endif
 }
 
 }

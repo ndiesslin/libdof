@@ -24,6 +24,15 @@ void IOConfigurator::Initialize()
    hid_init();
 #endif
 #ifdef __LIBUSB__
+#ifndef __APPLE__
+   InitializeUSB();
+#endif
+#endif
+}
+
+#ifdef __LIBUSB__
+bool IOConfigurator::InitializeUSB()
+{
    if (s_libusbContext == nullptr)
    {
       int result = libusb_init(&s_libusbContext);
@@ -31,10 +40,12 @@ void IOConfigurator::Initialize()
       {
          Log::Exception(StringExtensions::Build("Failed to initialize libusb: {0}", std::to_string(result)));
          s_libusbContext = nullptr;
+         return false;
       }
    }
-#endif
+   return true;
 }
+#endif
 
 void IOConfigurator::Shutdown()
 {

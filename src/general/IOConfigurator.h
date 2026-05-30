@@ -16,6 +16,7 @@ public:
    static void Shutdown();
 
 #ifdef __LIBUSB__
+   static bool InitializeUSB();
    static libusb_context* GetUSBContext() { return s_libusbContext; }
 #endif
 

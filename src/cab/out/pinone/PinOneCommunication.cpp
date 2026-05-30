@@ -103,6 +103,14 @@ bool PinOneCommunication::ConnectToServer()
                close(sockfd);
                return false;
             }
+
+            int socketError = 0;
+            socklen_t socketErrorLength = sizeof(socketError);
+            if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &socketError, &socketErrorLength) < 0 || socketError != 0)
+            {
+               close(sockfd);
+               return false;
+            }
          }
          else
          {
@@ -127,7 +135,21 @@ bool PinOneCommunication::ConnectToServer()
 
 bool PinOneCommunication::DisconnectFromServer()
 {
-   Disconnect();
+#ifdef _WIN32
+   if (m_pipeClient)
+#else
+   if (static_cast<int>(reinterpret_cast<intptr_t>(m_pipeClient)) >= 0)
+#endif
+   {
+      try
+      {
+         Disconnect();
+      }
+      catch (...)
+      {
+      }
+   }
+
    if (m_server)
    {
       m_server->StopServer();

@@ -72,6 +72,7 @@ public:
 
 private:
    Pinball* m_pinball;
+   bool m_initialized = false;
 };
 
 } // namespace DOF

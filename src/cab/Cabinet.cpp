@@ -53,10 +53,6 @@ Cabinet::Cabinet()
    m_curves = new CurveList();
    m_colors = new ColorList();
 
-#ifdef __HIDAPI__
-   Pinscape::Initialize();
-   PinscapePico::Initialize();
-#endif
 }
 
 Cabinet::~Cabinet()

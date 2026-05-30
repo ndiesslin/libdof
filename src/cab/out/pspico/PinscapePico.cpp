@@ -109,6 +109,9 @@ void PinscapePico::ConnectToController()
    if (!VerifySettings())
       return;
 
+   if (s_devices.empty())
+      Initialize();
+
    for (auto device : s_devices)
    {
       if (device->UnitNo() == m_number)

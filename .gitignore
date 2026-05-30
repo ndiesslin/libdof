@@ -1,6 +1,12 @@
 /build/
 /out/
 /test/
+/.cache/
+/CMakeCache.txt
+/CMakeFiles/
+/Makefile
+/cmake_install.cmake
+/DirectOutput.log
 /.vs/
 /.vscode/
 CMakeSettings.json
@@ -10,3 +16,20 @@ third-party/runtime-libs
 third-party/build-libs
 third-party/include
 .DS_Store
+
+# Local macOS build/probe artifacts.
+/find_port_locker.py
+/probe_pinone*
+/test_config/
+/test_libserialport.cpp
+/test_output.log
+/test_pinone_direct.cpp
+/test_serial.py
+/test_sp
+/platforms/*/*/build/
+/platforms/*/*/third-party/
+/platforms/*/*/*.tar.gz
+/platforms/*/*/hidapi/
+/platforms/*/*/libftdi/
+/platforms/*/*/libserialport/
+/platforms/*/*/libusb/

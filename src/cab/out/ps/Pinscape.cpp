@@ -85,6 +85,13 @@ void Pinscape::SetMinCommandIntervalMs(int value)
 
 void Pinscape::Init(Cabinet* cabinet)
 {
+   if (s_devices.empty())
+   {
+      Initialize();
+      if (!m_dev && m_number >= 1 && m_number <= 16)
+         SetNumber(m_number);
+   }
+
    if (!m_minCommandIntervalMsSet && cabinet && cabinet->GetOwner() && cabinet->GetOwner()->HasConfigurationSetting("PinscapeDefaultMinCommandIntervalMs"))
    {
       std::string value = cabinet->GetOwner()->GetConfigurationSetting("PinscapeDefaultMinCommandIntervalMs");

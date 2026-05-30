@@ -23,6 +23,9 @@ PacDriveSingleton::~PacDriveSingleton() { Shutdown(); }
 
 void PacDriveSingleton::Initialize()
 {
+#ifdef __LIBUSB__
+   IOConfigurator::InitializeUSB();
+#endif
    m_usbContext = IOConfigurator::GetUSBContext();
    EnumerateDevices();
 }

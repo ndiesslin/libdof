@@ -16,9 +16,7 @@ private:
    std::string m_comPort;
    std::string m_pipeName;
    int m_baudRate = 2000000;
-   int m_rawFd = -1; // Fallback for when libserialport fails
-   static std::atomic<int> s_instanceCount;
-   bool m_isDuplicate = false;
+   int m_rawFd = -1;
    std::thread m_serverThread;
    struct sp_port* m_serialPort = nullptr;
 #ifndef _WIN32
@@ -26,6 +24,8 @@ private:
 #endif
 
    void HandleClientConnection(void* serverStream);
+   bool OpenRawSerialPort();
+   void CloseRawSerialPort();
 
 public:
    NamedPipeServer(const std::string& pipeName, const std::string& comPort, int baudRate = 2000000);
