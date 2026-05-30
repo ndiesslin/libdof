@@ -93,7 +93,15 @@ void PinOne::Init(Cabinet* cabinet)
    {
        auto it = cabinet->GetOwner()->GetConfigurationSettings().find("PinOneBaudRate");
        if (it != cabinet->GetOwner()->GetConfigurationSettings().end())
-           SetBaudRate(std::stoi(it->second));
+       {
+          try
+          {
+             SetBaudRate(std::stoi(it->second));
+          }
+          catch (...)
+          {
+          }
+       }
    }
 
    OutputControllerFlexCompleteBase::Init(cabinet);
