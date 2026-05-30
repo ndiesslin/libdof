@@ -25,9 +25,6 @@ This library is currently used by [Visual Pinball Standalone](https://github.com
 - **[PacLED64](https://www.ultimarc.com/output/led-and-output-controllers/pacled64/)** - Ultimarc's 64-output LED controller with PWM support
 - **[LedWiz](https://groovygamegear.com/webstore/index.php?main_page=product_info&products_id=239)** - LED-Wiz's 32-port USB compatible lighting and output controller
 - **[PinOne](https://www.clevelandsoftwaredesign.com/pinball-parts/pinone)** - Cleveland Software Design controller with 63 outputs
-  - Tested on macOS (Apple Silicon) with PinOne Mini controller via USB serial (`/dev/cu.usbmodem*`)
-  - Uses POSIX raw serial fallback when `libserialport` is unavailable
-  - Configurable baud rate via `<BaudRate>` element in `CabinetConfig.xml` (default: 2000000)
 - **[FTDI Controllers](https://directoutput.github.io/DirectOutput/hardware.html#hardware_FT245bitbang)** - FT245R bitbang controllers  
 
 ### **Implemented & Ready To Test**
