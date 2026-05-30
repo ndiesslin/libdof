@@ -239,6 +239,7 @@ void NamedPipeServer::HandleClientConnection(void* serverStream)
          {
             std::string base64Data = requestStr.substr(6);
             std::vector<uint8_t> bytesToWrite = StringExtensions::FromBase64(base64Data);
+            bool writeSucceeded = false;
 
             // Lazy recovery: If port is null, try to open it now
             if (!m_serialPort)
@@ -270,15 +271,16 @@ void NamedPipeServer::HandleClientConnection(void* serverStream)
                    }
                }
 #else
-               OpenRawSerialPort();
+               writeSucceeded = OpenRawSerialPort();
 #endif
             }
 
             if (m_serialPort)
             {
                int written = sp_blocking_write(m_serialPort, bytesToWrite.data(), bytesToWrite.size(), 500);
+               writeSucceeded = written == static_cast<int>(bytesToWrite.size());
 
-               if (written < 0)
+               if (!writeSucceeded)
                {
                    sp_close(m_serialPort);
                    sp_free_port(m_serialPort);
@@ -319,15 +321,19 @@ void NamedPipeServer::HandleClientConnection(void* serverStream)
             else if (m_rawFd >= 0)
             {
                ssize_t written = write(m_rawFd, bytesToWrite.data(), bytesToWrite.size());
-               if (written < 0) {
-                   Log::Error(StringExtensions::Build("NamedPipeServer: Raw POSIX WRITE failed (errno: {0})", std::to_string(errno)));
-                   close(m_rawFd);
-                   m_rawFd = -1;
+               writeSucceeded = written == static_cast<ssize_t>(bytesToWrite.size());
+               if (!writeSucceeded)
+               {
+                   if (written < 0)
+                      Log::Error(StringExtensions::Build("NamedPipeServer: Raw POSIX WRITE failed (errno: {0})", std::to_string(errno)));
+                   else
+                      Log::Error(StringExtensions::Build("NamedPipeServer: Raw POSIX short write ({0}/{1})", std::to_string(written), std::to_string(bytesToWrite.size())));
+                   CloseRawSerialPort();
                }
             }
 #endif
 
-            std::string response = "OK";
+            std::string response = writeSucceeded ? "OK" : "ERROR";
 #ifdef _WIN32
             HANDLE pipe = static_cast<HANDLE>(serverStream);
             DWORD bytesWritten;

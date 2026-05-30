@@ -35,6 +35,8 @@ public:
 private:
    void SendPipeMessage(const std::string& message);
    std::string ReadMessage();
+   void ClosePipeClient();
+   void ResetServer();
 };
 
 }

@@ -150,27 +150,8 @@ bool PinOneCommunication::DisconnectFromServer()
       }
    }
 
-   if (m_server)
-   {
-      m_server->StopServer();
-      delete m_server;
-      m_server = nullptr;
-   }
-
-#ifdef _WIN32
-   if (m_pipeClient)
-   {
-      CloseHandle(static_cast<HANDLE>(m_pipeClient));
-      m_pipeClient = nullptr;
-   }
-#else
-   int sockfd = static_cast<int>(reinterpret_cast<intptr_t>(m_pipeClient));
-   if (sockfd >= 0)
-   {
-      close(sockfd);
-      m_pipeClient = reinterpret_cast<void*>(static_cast<intptr_t>(-1));
-   }
-#endif
+   ResetServer();
+   ClosePipeClient();
    return true;
 }
 
@@ -180,6 +161,7 @@ bool PinOneCommunication::CreateServer()
    {
       if (!StringExtensions::IsNullOrEmpty(m_comPort))
       {
+         ResetServer();
          m_server = new NamedPipeServer(m_pipeName, m_comPort, m_baudRate);
          m_server->StartServer();
          std::this_thread::sleep_for(std::chrono::milliseconds(300));
@@ -206,7 +188,9 @@ void PinOneCommunication::Write(const std::vector<uint8_t>& bytesToWrite)
 {
    std::string base64Bytes = StringExtensions::ToBase64(bytesToWrite);
    SendPipeMessage("WRITE " + base64Bytes);
-   ReadMessage();
+   std::string response = ReadMessage();
+   if (response != "OK")
+      throw std::runtime_error("Failed to write to PinOne");
 }
 
 std::string PinOneCommunication::ReadLine()
@@ -227,8 +211,8 @@ void PinOneCommunication::SendPipeMessage(const std::string& message)
    {
 #ifdef _WIN32
       HANDLE pipe = static_cast<HANDLE>(m_pipeClient);
-      DWORD bytesWritten;
-      if (!WriteFile(pipe, message.c_str(), static_cast<DWORD>(message.length()), &bytesWritten, nullptr))
+      DWORD bytesWritten = 0;
+      if (!WriteFile(pipe, message.c_str(), static_cast<DWORD>(message.length()), &bytesWritten, nullptr) || bytesWritten != static_cast<DWORD>(message.length()))
       {
          throw std::runtime_error("Failed to write to pipe");
       }
@@ -238,25 +222,28 @@ void PinOneCommunication::SendPipeMessage(const std::string& message)
           throw std::runtime_error("Socket not connected");
       }
       ssize_t result = write(sockfd, message.c_str(), message.length());
-      if (result < 0)
+      if (result != static_cast<ssize_t>(message.length()))
          throw std::runtime_error("Failed to write to socket");
 #endif
    }
    catch (...)
    {
+      ClosePipeClient();
       if (CreateServer() && ConnectToServer())
       {
 #ifdef _WIN32
          HANDLE pipe = static_cast<HANDLE>(m_pipeClient);
-         DWORD bytesWritten;
-         WriteFile(pipe, message.c_str(), static_cast<DWORD>(message.length()), &bytesWritten, nullptr);
+         DWORD bytesWritten = 0;
+         if (!WriteFile(pipe, message.c_str(), static_cast<DWORD>(message.length()), &bytesWritten, nullptr) || bytesWritten != static_cast<DWORD>(message.length()))
+            throw std::runtime_error("Failed to write to pipe after retry");
 #else
          int sockfd = static_cast<int>(reinterpret_cast<intptr_t>(m_pipeClient));
          if (sockfd < 0) {
              throw std::runtime_error("Socket not connected after retry");
          }
          ssize_t bytesWritten = write(sockfd, message.c_str(), message.length());
-         (void)bytesWritten;
+         if (bytesWritten != static_cast<ssize_t>(message.length()))
+            throw std::runtime_error("Failed to write to socket after retry");
 #endif
       }
       else
@@ -272,8 +259,8 @@ std::string PinOneCommunication::ReadMessage()
 
 #ifdef _WIN32
       HANDLE pipe = static_cast<HANDLE>(m_pipeClient);
-      DWORD bytesRead;
-      if (!ReadFile(pipe, response.data(), static_cast<DWORD>(response.size()), &bytesRead, nullptr))
+      DWORD bytesRead = 0;
+      if (!ReadFile(pipe, response.data(), static_cast<DWORD>(response.size()), &bytesRead, nullptr) || bytesRead == 0)
       {
          throw std::runtime_error("Failed to read from pipe");
       }
@@ -284,17 +271,44 @@ std::string PinOneCommunication::ReadMessage()
           throw std::runtime_error("Socket not connected");
       }
       ssize_t bytesRead = read(sockfd, response.data(), response.size());
-      if (bytesRead < 0)
+      if (bytesRead <= 0)
          throw std::runtime_error("Failed to read from socket");
       return std::string(response.data(), bytesRead);
 #endif
    }
    catch (...)
    {
-      if (CreateServer() && ConnectToServer())
-         return ReadMessage();
-      else
-         return "";
+      ClosePipeClient();
+      ResetServer();
+      return "";
+   }
+}
+
+void PinOneCommunication::ClosePipeClient()
+{
+#ifdef _WIN32
+   if (m_pipeClient)
+   {
+      CloseHandle(static_cast<HANDLE>(m_pipeClient));
+      m_pipeClient = nullptr;
+   }
+#else
+   int sockfd = static_cast<int>(reinterpret_cast<intptr_t>(m_pipeClient));
+   if (sockfd >= 0)
+   {
+      close(sockfd);
+      m_pipeClient = reinterpret_cast<void*>(static_cast<intptr_t>(-1));
+   }
+#endif
+}
+
+void PinOneCommunication::ResetServer()
+{
+   if (m_server)
+   {
+      m_server->StopServer();
+      delete m_server;
+      m_server = nullptr;
    }
 }
 
