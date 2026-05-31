@@ -134,6 +134,10 @@ void NamedPipeServer::StartServer()
             int clientSock = accept(m_serverSocket, nullptr, nullptr);
             if (clientSock >= 0)
             {
+#ifdef __APPLE__
+               int set = 1;
+               setsockopt(clientSock, SOL_SOCKET, SO_NOSIGPIPE, (void *)&set, sizeof(int));
+#endif
                HandleClientConnection(reinterpret_cast<void*>(static_cast<intptr_t>(clientSock)));
                close(clientSock);
             }

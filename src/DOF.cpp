@@ -88,6 +88,9 @@ DOF::~DOF()
 
 void DOF::Init(const char* tableFilename, const char* romName)
 {
+   if (m_initialized)
+      Finish();
+
    Config* config = Config::GetInstance();
 
    const char* basePath = config->GetBasePath();
