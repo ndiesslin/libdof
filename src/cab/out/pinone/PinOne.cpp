@@ -246,7 +246,13 @@ bool PinOne::FromXml(const tinyxml2::XMLElement* element)
    const tinyxml2::XMLElement* baudRateElement = element->FirstChildElement("BaudRate");
    if (baudRateElement && baudRateElement->GetText())
    {
-      SetBaudRate(std::stoi(baudRateElement->GetText()));
+      try
+      {
+         SetBaudRate(std::stoi(baudRateElement->GetText()));
+      }
+      catch (...)
+      {
+      }
    }
 
    return true;
